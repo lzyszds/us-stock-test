@@ -30,26 +30,44 @@ export interface PrivateSubItem {
   instType: string // US-STOCKS / USDT-FUTURES / SPOT / SMIX
   channel: string // orders / fill / positions / account
   instId: string // default 或具体标的
+  extHours?: boolean // 美股盘前盘后行情
 }
 
 export type PrivateWsCallback = (data: unknown) => void
 
 function buildSign(timestamp: string, secretKey: string): string {
   const prehash = timestamp + 'GET' + '/user/verify'
-  return createHmac('sha256', secretKey).update(prehash).digest('base64')
+  // 默认按 Flutter 写法:secretKey 字面值当 UTF-8 bytes 做 HMAC key
+  const signRaw = createHmac('sha256', secretKey).update(prehash).digest('base64')
+  // 备用编码,方便诊断:小写化、hex 解码成 16 字节
+  const signLower = createHmac('sha256', secretKey.toLowerCase()).update(prehash).digest('base64')
+  let signHexDecoded = '(skip)'
+  try {
+    signHexDecoded = createHmac('sha256', Buffer.from(secretKey, 'hex')).update(prehash).digest('base64')
+  } catch {
+    /* secretKey 不是 hex 也无所谓 */
+  }
+  debugLog(
+    `[WS-Private] sign 三态对照 | prehash="${prehash}" | secretLen=${secretKey.length}\n` +
+      `  ① 字面值(uppercase utf8): ${signRaw}\n` +
+      `  ② 小写化(utf8):          ${signLower}\n` +
+      `  ③ hex 解码成 16 字节:     ${signHexDecoded}`
+  )
+  return signRaw
 }
 
 function buildLoginCmd(args: PrivateWsLoginArgs): string {
   const timestamp = Date.now().toString()
   const sign = buildSign(timestamp, args.secretKey)
+  // 字段顺序对齐 Flutter 客户端,避免服务端有不规范的字段顺序校验
   const cmd = {
     op: 'login',
     args: [
       {
         apiKey: args.apiKey,
+        timestamp,
         passphrase: args.passphrase,
         clientType: args.clientType,
-        timestamp,
         sign
       }
     ]
@@ -119,7 +137,7 @@ export class PrivateWsClient {
     this.url = url
     this.loggedIn = false
     if (subscriptions) {
-      this.pendingSubs = subscriptions
+      this.pendingSubs = [...subscriptions]
     }
 
     if (this.ws) {
@@ -216,7 +234,8 @@ export class PrivateWsClient {
             event: 'login-fail',
             code,
             msg: parsed.msg,
-            loginArgs: this.loginArgs
+            loginArgs: this.loginArgs,
+            sign: buildSign(this.loginArgs.clientType, this.loginArgs.secretKey) // 额外暴露 sign 以验证登录命令构造是否正确
           })
           this.emitStatus()
         }
@@ -232,7 +251,11 @@ export class PrivateWsClient {
       if (event === 'error') {
         debugLog(`[WS-Private] 错误: code=${code} msg=${parsed.msg}`)
         debugLog(`[WS-Private] 错误: ${JSON.stringify(this.loginArgs)}`)
-        this.onData(parsed)
+        this.onData({
+          ...parsed,
+          loginArgs: this.loginArgs,
+          sign: buildSign(this.loginArgs.clientType, this.loginArgs.secretKey) // 额外暴露 sign 以验证登录命令构造是否正确
+        })
         return
       }
     }

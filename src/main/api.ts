@@ -59,7 +59,7 @@ requestSkipToken.interceptors.request.use((config: InternalAxiosRequestConfig) =
   config.baseURL = loadConfig().apiBaseUrl
   config.headers = config.headers ?? {}
   config.headers['operationID'] = uuidv4()
-  const platform = 2
+  const platform = 1
   config.headers['Version'] = `${platform}-${app.getVersion()}`
   config.headers['Terminal-Version'] = app.getVersion()
   config.headers['AppType'] = 'QQLink'
@@ -103,6 +103,9 @@ interface LoginResult {
     secretKey?: string
     kbitToken?: string
     chatToken?: string
+    // KeepBit 私有 WS HMAC 签名用的 app 级 secret(等同 Flutter DataSp.kbAppSecret)
+    kbitAppKey?: string
+    kbitAppSecret?: string
     [key: string]: unknown
   }
 }
@@ -114,7 +117,7 @@ function getAreaCode(areaCode?: string): string {
 
 export async function login(params: LoginParams): Promise<LoginResult> {
   const deviceInfo = getDeviceInfo()
-  const platform = 2
+  const platform = 1
 
   const { data } = await requestSkipToken.post<LoginResult>('/account/login', {
     ...params,

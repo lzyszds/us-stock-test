@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Settings } from 'lucide-react'
 import SettingsDialog from './SettingsDialog'
+import textIcon from './assets/text-icon.png'
 
 interface LoginPageProps {
   onLoginSuccess: (data: { token: string; userID: string }) => void
@@ -81,8 +82,8 @@ function LoginPage({ onLoginSuccess }: LoginPageProps): React.JSX.Element {
 
         {/* Header */}
         <div className="p-8 pb-4 text-center">
-          <div className="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 items-center justify-center text-white font-bold text-2xl shadow-lg mb-4">
-            QL
+          <div className="inline-flex overflow-hidden">
+            <img src={textIcon} alt="Logo" className="w-58 h-58 rounded-full object-cover select-none dark:invert-75" />
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">欢迎回来 美股调试器</h1>
           <p className="text-slate-500 dark:text-slate-400 mt-1">请登录您的 QQLink 账号</p>

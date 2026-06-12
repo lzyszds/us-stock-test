@@ -13,6 +13,9 @@ interface AuthStore {
   secretKey: string
   kbitToken: string
   chatToken: string
+  // KeepBit 私有 WS HMAC 签名(对应 Flutter DataSp.kbAppKey / kbAppSecret)
+  kbitAppKey: string
+  kbitAppSecret: string
 }
 
 const defaults: AuthStore = {
@@ -24,7 +27,9 @@ const defaults: AuthStore = {
   walletToken: '',
   secretKey: '',
   kbitToken: '',
-  chatToken: ''
+  chatToken: '',
+  kbitAppKey: '',
+  kbitAppSecret: ''
 }
 
 // 页面 ~/utils/bridge 的 AuthTokenPayload 形状（token = walletToken）
@@ -72,6 +77,8 @@ export function saveToken(data: {
   secretKey?: string
   kbitToken?: string
   chatToken?: string
+  kbitAppKey?: string
+  kbitAppSecret?: string
 }) {
   const store = loadStore()
   store.token = data.token
@@ -84,6 +91,8 @@ export function saveToken(data: {
   store.kbitToken = data.kbitToken ?? ''
   // chatToken 缺失时退化为登录 token（来自 chat.qqlink.io）
   store.chatToken = data.chatToken ?? data.token ?? ''
+  store.kbitAppKey = data.kbitAppKey ?? ''
+  store.kbitAppSecret = data.kbitAppSecret ?? ''
   saveStore(store)
 }
 

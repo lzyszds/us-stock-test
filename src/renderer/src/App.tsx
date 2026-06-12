@@ -6,24 +6,24 @@ import {
   Play,
   Square,
   LogOut,
-  Trash2,
   Sun,
   Moon,
-  Wifi,
-  WifiOff,
-  Terminal,
   Database,
   Link,
-  ArrowDownToLine,
-  Bug,
-  Pause,
-  ChevronDown,
-  ChevronsDown
+  Bug
 } from 'lucide-react'
 import LoginPage from './LoginPage'
 import SettingsDialog from './SettingsDialog'
-import JsonTree from './JsonTree'
+import DebugPanel, {
+  emptyStats,
+  emptyPrivateData,
+  type LogMsg,
+  type TickerRow,
+  type WsStats,
+  type PrivateData
+} from './DebugPanel'
 import type { AppConfig } from './types'
+import appIcon from '../../../resources/icon.png'
 
 // 扩展 window 类型
 declare global {
@@ -85,12 +85,10 @@ function App(): React.JSX.Element {
   const [mockRunning, setMockRunning] = useState(false)
   const [devToolsOpened, setDevToolsOpened] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [wsMessages, setWsMessages] = useState<
-    { source: 'kbPublicMessage' | 'kbPrivateMessage'; data: unknown }[]
-  >([])
+  const [wsMessages, setWsMessages] = useState<LogMsg[]>([])
   const [webviewPreload, setWebviewPreload] = useState<string>('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark'
+    return (localStorage.getItem('theme') as 'light' | 'dark') || 'light'
   })
   const [autoScroll, setAutoScroll] = useState(false)
   const [logEnabled, setLogEnabled] = useState(true)
@@ -100,19 +98,164 @@ function App(): React.JSX.Element {
     logEnabledRef.current = logEnabled
   }, [logEnabled])
 
-  const LOG_LIMIT = 300
+  const [logLimit, setLogLimit] = useState(300)
 
-  const webviewRef = useRef<HTMLWebViewElement>(null)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // ---- 统计 & 行情快照 ----
+  // 高频推送下不能每条 setState,用 ref 累积、500ms 节流刷到 state 触发渲染。
+  const statsRef = useRef<WsStats>(emptyStats())
+  const tickersRef = useRef<Record<string, TickerRow>>({})
+  const privateRef = useRef<PrivateData>(emptyPrivateData())
+  const [stats, setStats] = useState<WsStats>(emptyStats())
+  const [tickers, setTickers] = useState<Record<string, TickerRow>>({})
+  const [privateData, setPrivateData] = useState<PrivateData>(emptyPrivateData())
+  const [nowTick, setNowTick] = useState<number>(Date.now())
 
   useEffect(() => {
-    if (!autoScroll) return
-    const el = scrollContainerRef.current
-    if (!el) return
-    // 仅当用户已经在底部(<=40px 容差)时才跟随,否则不动,避免把正在看的位置顶走
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-    if (atBottom) el.scrollTop = el.scrollHeight
-  }, [wsMessages, autoScroll])
+    const id = window.setInterval(() => {
+      setStats({ ...statsRef.current })
+      setTickers({ ...tickersRef.current })
+      setPrivateData({
+        account: privateRef.current.account,
+        positions: [...privateRef.current.positions],
+        orders: [...privateRef.current.orders],
+        fills: [...privateRef.current.fills],
+        channels: { ...privateRef.current.channels }
+      })
+      setNowTick(Date.now())
+    }, 500)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const resetStats = (): void => {
+    statsRef.current = emptyStats()
+    tickersRef.current = {}
+    privateRef.current = emptyPrivateData()
+    setStats(emptyStats())
+    setTickers({})
+    setPrivateData(emptyPrivateData())
+  }
+
+  // 私有推送数据归一化:按 channel 路由到不同集合
+  const ingestPrivatePush = (
+    channel: string,
+    action: string,
+    items: Record<string, unknown>[],
+    now: number
+  ): void => {
+    const p = privateRef.current
+    p.channels[channel] = {
+      hits: (p.channels[channel]?.hits ?? 0) + items.length,
+      lastAt: now
+    }
+    const dedupe = (
+      list: Record<string, unknown>[],
+      next: Record<string, unknown>,
+      keys: string[]
+    ): Record<string, unknown>[] => {
+      const key = keys.map((k) => next[k]).find((v) => v !== undefined && v !== null)
+      if (key === undefined) return [next, ...list]
+      const filtered = list.filter(
+        (x) => keys.map((k) => x[k]).find((v) => v !== undefined && v !== null) !== key
+      )
+      return [next, ...filtered]
+    }
+    if (channel === 'account') {
+      // 资金账户:覆盖
+      if (items[0]) p.account = items[0]
+    } else if (channel === 'positions') {
+      for (const it of items) {
+        p.positions =
+          action === 'snapshot' && items.length > 1 && it === items[0]
+            ? [it]
+            : dedupe(p.positions, it, ['symbol', 'instId', 'posId'])
+      }
+      if (action === 'snapshot') p.positions = items
+    } else if (channel === 'orders') {
+      for (const it of items) {
+        p.orders = dedupe(p.orders, it, ['orderId', 'ordId', 'clOrdId', 'clientOrderId'])
+      }
+      p.orders = p.orders.slice(0, 100)
+      if (action === 'snapshot') p.orders = items.slice(0, 100)
+    } else if (channel === 'fill' || channel === 'fills') {
+      p.fills = [...items, ...p.fills].slice(0, 50)
+    }
+  }
+
+  // 把"一次 WS 事件"的时间戳/收消息计数 bump 一次。
+  // 区分单发(每条一次)和批量(一整批共一次),避免批内每条都算成"0ms 间隔"。
+  const bumpEventStats = (source: LogMsg['source']): void => {
+    const now = Date.now()
+    const s = statsRef.current
+    if (s.lastMsgAt) {
+      const gap = now - s.lastMsgAt
+      s.lastMsgGapMs = gap
+      s.minMsgGapMs = s.minMsgGapMs ? Math.min(s.minMsgGapMs, gap) : gap
+    }
+    s.lastMsgAt = now
+    if (source === 'kbPublicMessage') s.publicCount += 1
+    else s.privateCount += 1
+  }
+
+  // 一条原始消息进来时统一处理:解析行情/回执/私有数据。**不更新时间戳**。
+  const ingest = (source: LogMsg['source'], data: unknown): void => {
+    const now = Date.now()
+    const s = statsRef.current
+
+    if (data && typeof data === 'object') {
+      const o = data as Record<string, unknown>
+      if ('event' in o) {
+        const ok = o.code === '0' || o.code === 0
+        if (ok) s.ackOk += 1
+        else s.ackErr += 1
+      } else if ('action' in o && Array.isArray((o as { data?: unknown[] }).data)) {
+        s.pushMsgs += 1
+        const arr = (o as { data: Record<string, unknown>[] }).data
+        s.pushItems += arr.length
+        const arg = (o.arg as Record<string, unknown>) || {}
+        const channel = String(arg.channel || '')
+        const action = String((o as { action?: unknown }).action || '')
+
+        // 私有推送:按 channel 入库,不进 tickers
+        if (source === 'kbPrivateMessage' && channel && channel !== 'ticker') {
+          ingestPrivatePush(channel, action, arr, now)
+          return
+        }
+
+        for (const item of arr) {
+          const sym = (item.symbol as string) || ''
+          if (!sym) continue
+          const prev = tickersRef.current[sym]
+          const lastPrice = Number(item.lastPrice)
+          let trend: TickerRow['trend'] = ''
+          if (prev && Number.isFinite(prev.lastPrice) && Number.isFinite(lastPrice)) {
+            if (lastPrice > prev.lastPrice) trend = 'up'
+            else if (lastPrice < prev.lastPrice) trend = 'down'
+            else trend = prev.trend
+          }
+          tickersRef.current[sym] = {
+            symbol: sym,
+            lastPrice,
+            change: Number(item.change),
+            changePercent: Number(item.changePercent),
+            bidPrice: Number(item.bidPrice),
+            bidSize: Number(item.bidSize),
+            askPrice: Number(item.askPrice),
+            askSize: Number(item.askSize),
+            prevClose: Number(item.prevClose),
+            open: Number(item.open),
+            high: Number(item.high),
+            low: Number(item.low),
+            ts: Number(item.ts),
+            trend,
+            updatedAt: now,
+            hits: (prev?.hits ?? 0) + 1
+          }
+        }
+      }
+    }
+  }
+
+  const webviewRef = useRef<HTMLWebViewElement>(null)
 
   useEffect(() => {
     const root = window.document.documentElement
@@ -193,23 +336,35 @@ function App(): React.JSX.Element {
       setWsUrl(status.url)
     })
     const unsubMessage = bridge.onWsMessage((data) => {
+      // 单条到达 = 一次 WS 事件
+      bumpEventStats('kbPublicMessage')
+      statsRef.current.lastBatchSize = 1
+      ingest('kbPublicMessage', data)
       if (!logEnabledRef.current) return
       setWsMessages((prev) =>
-        [...prev, { source: 'kbPublicMessage' as const, data }].slice(-LOG_LIMIT)
+        [...prev, { source: 'kbPublicMessage' as const, data }].slice(-logLimit)
       )
     })
     const unsubBatch = bridge.onWsBatch((batch) => {
+      // 整批 = 一次 WS 事件,只在批边界计一次时间间隔;批内每条只解析、不再 bump 时间
+      bumpEventStats('kbPublicMessage')
+      const s = statsRef.current
+      s.lastBatchSize = batch.length
+      if (batch.length > s.maxBatchSize) s.maxBatchSize = batch.length
+      for (const d of batch) ingest('kbPublicMessage', d)
       if (!logEnabledRef.current) return
       setWsMessages((prev) =>
         [...prev, ...batch.map((d) => ({ source: 'kbPublicMessage' as const, data: d }))].slice(
-          -LOG_LIMIT
+          -logLimit
         )
       )
     })
     const unsubPrivate = bridge.onWsPrivateMessage?.((data) => {
+      bumpEventStats('kbPrivateMessage')
+      ingest('kbPrivateMessage', data)
       if (!logEnabledRef.current) return
       setWsMessages((prev) =>
-        [...prev, { source: 'kbPrivateMessage' as const, data }].slice(-LOG_LIMIT)
+        [...prev, { source: 'kbPrivateMessage' as const, data }].slice(-logLimit)
       )
     })
     const unsubMock = bridge.onMockStatus((status) => setMockRunning(status.running))
@@ -304,225 +459,126 @@ function App(): React.JSX.Element {
               <Database className="text-white opacity-20 w-16 h-16 animate-pulse" />
             </div>
           )}
-
-          <div className="absolute bottom-6 left-6 pointer-events-none z-20">
-            <div className="bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 flex items-center gap-2 shadow-lg">
-              {wsConnected ? (
-                <Wifi className="w-3.5 h-3.5 text-emerald-400 drop-shadow-[0_0_5px_rgba(52,211,153,0.5)]" />
-              ) : (
-                <WifiOff className="w-3.5 h-3.5 text-rose-400" />
-              )}
-              <span
-                className={`text-[9px] font-bold tracking-widest uppercase ${wsConnected ? 'text-emerald-400' : 'text-rose-400'}`}
-              >
-                {wsConnected ? 'ws在线' : 'ws离线'}
-              </span>
-            </div>
-          </div>
         </div>
       </main>
 
       <aside className="flex-1 h-full flex flex-col rounded-xl overflow-hidden bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 relative z-10">
-        <div className="p-6 border-b border-slate-100 dark:border-slate-800 space-y-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white shadow-lg">
-                <Terminal className="w-5 h-5" />
-              </div>
-              <div className="flex flex-col">
-                <span className="text-sm font-black tracking-tight dark:text-white uppercase">
-                  QQLink
-                </span>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <div
-                    className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}
-                  />
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
-                    Core V1.0
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={toggleTheme}
-                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-slate-500 dark:text-slate-400 hover:text-blue-500"
-                title={theme === 'light' ? '切换暗色' : '切换亮色'}
+        <header className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center gap-3">
+          {/* 品牌 */}
+          <div className="flex items-center gap-2.5 mr-1">
+            <img
+              src={appIcon}
+              alt="app"
+              className="w-8 h-8 rounded-lg object-contain ring-1 ring-slate-200 dark:ring-slate-700"
+            />
+            <div className="flex flex-col leading-tight">
+              <span className="text-[13px] font-black tracking-tight text-slate-800 dark:text-white">
+                QQLink
+              </span>
+              <span
+                className={`inline-flex items-center gap-1 text-[9px] font-semibold ${
+                  wsConnected ? 'text-emerald-500' : 'text-rose-500'
+                }`}
               >
-                {theme === 'light' ? (
-                  <Moon className="w-4.5 h-4.5" />
-                ) : (
-                  <Sun className="w-4.5 h-4.5" />
-                )}
-              </button>
-              <button
-                onClick={() => setSettingsOpen(true)}
-                className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-slate-500 dark:text-slate-400 hover:text-blue-500"
-                title="设置"
-              >
-                <Settings className="w-4.5 h-4.5" />
-              </button>
-              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 group transition-all hover:border-blue-500/30">
-                <User className="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-500 transition-colors" />
-                <span className="text-[11px] font-mono text-slate-600 dark:text-slate-300 truncate ml-3 max-w-[180px]">
-                  {userID || 'AUTH_PENDING'}
-                </span>
-              </div>
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
+                  }`}
+                />
+                {wsConnected ? 'WS 在线' : 'WS 离线'}
+              </span>
             </div>
           </div>
 
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              <button
-                onClick={handleReconnect}
-                className="py-2.5 px-3 flex items-center justify-center gap-2 bg-slate-50 dark:bg-slate-800 hover:bg-blue-600 hover:text-white rounded-lg border border-slate-100 dark:border-slate-800 transition-all shadow-sm group"
-              >
-                <RefreshCw className="w-3.5 h-3.5 group-hover:rotate-180 transition-transform duration-500" />
-                <span className="text-[10px] font-bold">重新连接</span>
-              </button>
-              <button
-                onClick={handleToggleMock}
-                className={`py-2.5 px-3 flex items-center justify-center gap-2 rounded-lg border transition-all shadow-sm ${
-                  mockRunning
-                    ? 'bg-indigo-600 border-indigo-600 text-white'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-100 dark:border-slate-800 hover:bg-indigo-500 hover:text-white'
-                }`}
-              >
-                {mockRunning ? (
+          {/* 主操作按钮组(分段控件风) */}
+          <div className="flex items-center rounded-lg bg-slate-100/80 dark:bg-slate-800/60 p-0.5 ml-1">
+            <HeaderBtn
+              onClick={handleReconnect}
+              icon={<RefreshCw className="w-3.5 h-3.5" />}
+              label="重连"
+              title="重新连接 WS"
+            />
+            <HeaderBtn
+              onClick={handleToggleMock}
+              active={mockRunning}
+              activeClass="bg-indigo-500 text-white shadow-sm"
+              icon={
+                mockRunning ? (
                   <Square className="w-3.5 h-3.5 fill-current" />
                 ) : (
                   <Play className="w-3.5 h-3.5 fill-current" />
-                )}
-                <span className="text-[10px] font-bold">
-                  {mockRunning ? '停止模拟' : '行情模拟'}
-                </span>
-              </button>
-              <button
-                onClick={handleToggleDevTools}
-                className={`py-2.5 px-3 flex items-center justify-center gap-2 rounded-lg border transition-all shadow-sm ${
-                  devToolsOpened
-                    ? 'bg-amber-500 border-amber-500 text-white'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-100 dark:border-slate-800 hover:bg-amber-500 hover:text-white'
-                }`}
-              >
-                <Bug className="w-3.5 h-3.5" />
-                <span className="text-[10px] font-bold">
-                  {devToolsOpened ? '关闭调试' : '调试'}
-                </span>
-              </button>
-              <button
-                onClick={handleLogout}
-                className="px-3 py-2.5 flex items-center justify-center gap-2 text-red-500 bg-red-50 dark:bg-red-900/10 hover:bg-red-500 hover:text-white rounded-lg border border-red-100 dark:border-red-900/20 transition-all shadow-sm"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span className="text-[10px] font-bold">退出</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex-1 flex flex-col min-h-0 bg-white dark:bg-slate-900">
-          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Terminal className="w-3.5 h-3.5 text-blue-500" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                Stream_Log
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 px-2 py-0.5 rounded-full font-bold tabular-nums">
-                {wsMessages.length}/{LOG_LIMIT}
-              </span>
-              {[0, 1, 2].map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setExpandDepth(d)}
-                  title={d === 0 ? '折叠' : `展开 ${d} 层`}
-                  className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
-                    expandDepth === d
-                      ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                      : 'text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  {d === 0 ? (
-                    <ChevronDown className="w-3.5 h-3.5 -rotate-90" />
-                  ) : d === 1 ? (
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  ) : (
-                    <ChevronsDown className="w-3.5 h-3.5" />
-                  )}
-                  <span className="text-[9px] font-bold">{d}</span>
-                </button>
-              ))}
-              <button
-                onClick={() => setLogEnabled((v) => !v)}
-                title={logEnabled ? '暂停监听日志' : '恢复监听日志'}
-                className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors ${
-                  logEnabled
-                    ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
-                    : 'text-amber-500 bg-amber-50 dark:bg-amber-900/20'
-                }`}
-              >
-                {logEnabled ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                <span className="text-[9px] font-bold">{logEnabled ? '监听中' : '已暂停'}</span>
-              </button>
-              <button
-                onClick={() => setAutoScroll(!autoScroll)}
-                className={`flex items-center gap-1.5 px-2 py-1 transition-colors rounded-md ${
-                  autoScroll
-                    ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                    : 'text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
-                }`}
-              >
-                <ArrowDownToLine className={`w-3.5 h-3.5 ${autoScroll ? 'animate-bounce' : ''}`} />
-                <span className="text-[9px] font-bold">滚动</span>
-              </button>
-              <button
-                onClick={() => setWsMessages([])}
-                className="flex items-center gap-1.5 px-2 py-1 text-slate-400 hover:text-red-500 transition-colors rounded-md hover:bg-red-50 dark:hover:bg-red-900/10"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span className="text-[9px] font-bold">清空</span>
-              </button>
-            </div>
+                )
+              }
+              label={mockRunning ? '停止' : '模拟'}
+              title={mockRunning ? '停止行情模拟' : '启动行情模拟'}
+            />
+            <HeaderBtn
+              onClick={handleToggleDevTools}
+              active={devToolsOpened}
+              activeClass="bg-amber-500 text-white shadow-sm"
+              icon={<Bug className="w-3.5 h-3.5" />}
+              label="调试"
+              title={devToolsOpened ? '关闭 WebView 调试' : '打开 WebView 调试'}
+            />
           </div>
 
-          <div
-            ref={scrollContainerRef}
-            className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar"
-          >
-            {wsMessages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center opacity-10 select-none grayscale">
-                <Database className="w-12 h-12 mb-4" />
-                <span className="text-[10px] font-black tracking-widest">NO_DATA_STREAM</span>
-              </div>
-            ) : (
-              wsMessages.map((msg, i) => (
-                <div
-                  key={i}
-                  className="px-2 py-1 bg-slate-50 dark:bg-slate-800/30 rounded border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-1 duration-200"
-                >
-                  <JsonTree
-                    key={expandDepth}
-                    data={msg.data}
-                    defaultExpandDepth={expandDepth}
-                    prefix={
-                      <span
-                        className={`mr-1.5 px-1 rounded text-[10px] font-bold ${
-                          msg.source === 'kbPrivateMessage'
-                            ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
-                            : 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
-                        }`}
-                      >
-                        [{msg.source}]
-                      </span>
-                    }
-                  />
-                </div>
-              ))
-            )}
+          <div className="flex-1" />
+
+          {/* 用户 */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700/60">
+            <span className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center">
+              <User className="w-3 h-3" />
+            </span>
+            <span
+              className="text-[11px] font-mono text-slate-600 dark:text-slate-300 truncate max-w-[120px]"
+              title={userID || '未登录'}
+            >
+              {userID || '未登录'}
+            </span>
           </div>
-        </div>
+
+          {/* 图标动作 */}
+          <div className="flex items-center">
+            <IconBtn
+              onClick={toggleTheme}
+              title={theme === 'light' ? '切换暗色' : '切换亮色'}
+              icon={
+                theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />
+              }
+            />
+            <IconBtn
+              onClick={() => setSettingsOpen(true)}
+              title="设置"
+              icon={<Settings className="w-4 h-4" />}
+            />
+            <IconBtn
+              onClick={handleLogout}
+              title="退出登录"
+              danger
+              icon={<LogOut className="w-4 h-4" />}
+            />
+          </div>
+        </header>
+
+        <DebugPanel
+          wsConnected={wsConnected}
+          mockRunning={mockRunning}
+          messages={wsMessages}
+          logLimit={logLimit}
+          setLogLimit={setLogLimit}
+          stats={stats}
+          tickers={tickers}
+          privateData={privateData}
+          nowTick={nowTick}
+          logEnabled={logEnabled}
+          setLogEnabled={setLogEnabled}
+          autoScroll={autoScroll}
+          setAutoScroll={setAutoScroll}
+          expandDepth={expandDepth}
+          setExpandDepth={setExpandDepth}
+          onClearLog={() => setWsMessages([])}
+          onResetStats={resetStats}
+        />
 
         <div className="p-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2 text-[9px] font-mono text-slate-400">
@@ -538,6 +594,65 @@ function App(): React.JSX.Element {
         onSaved={handleSettingsSaved}
       />
     </div>
+  )
+}
+
+// 顶栏分段按钮(成组在一个 pill 容器里)
+function HeaderBtn({
+  onClick,
+  icon,
+  label,
+  title,
+  active,
+  activeClass
+}: {
+  onClick: () => void
+  icon: React.ReactNode
+  label: string
+  title?: string
+  active?: boolean
+  activeClass?: string
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-bold transition-all ${
+        active
+          ? activeClass ?? 'bg-blue-500 text-white shadow-sm'
+          : 'text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700/80 hover:shadow-sm'
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  )
+}
+
+// 顶栏纯图标按钮
+function IconBtn({
+  onClick,
+  icon,
+  title,
+  danger
+}: {
+  onClick: () => void
+  icon: React.ReactNode
+  title?: string
+  danger?: boolean
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`p-2 rounded-lg transition-colors ${
+        danger
+          ? 'text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20'
+          : 'text-slate-500 dark:text-slate-400 hover:text-blue-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+      }`}
+    >
+      {icon}
+    </button>
   )
 }
 

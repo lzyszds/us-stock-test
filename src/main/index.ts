@@ -167,7 +167,7 @@ function connectWebSocket(url: string): void {
 
     try {
       const parsed = JSON.parse(raw)
-      console.log(`[WS] 收到消息:`, parsed)
+      // console.log(`[WS] 收到消息:`, parsed)
       handleParsed(parsed)
     } catch (e) {
       console.error(`[WS] 解析消息失败:`, e)
@@ -212,18 +212,33 @@ function forwardToWebView(data: unknown): void {
 // webview 第三方页面通过 callHandler('startWs') 触发。
 let privateWsClient: PrivateWsClient | null = null
 
+// 默认订阅(登录成功后自动 flush):美股账户/持仓/委托
+const DEFAULT_PRIVATE_SUBS: PrivateSubItem[] = [
+  { instType: 'US-STOCKS', channel: 'positions', instId: 'default', extHours: true },
+  { instType: 'US-STOCKS', channel: 'orders', instId: 'default', extHours: true },
+  { instType: 'US-STOCKS', channel: 'account', instId: 'default', extHours: true }
+]
+
 function connectPrivateWs(subscriptions?: PrivateSubItem[]): void {
   const cfg = loadConfig()
   const auth = getAuthInfo()
+  // 调用方没指定订阅时,用默认的三个频道
+  const subs =
+    subscriptions && subscriptions.length > 0 ? subscriptions : DEFAULT_PRIVATE_SUBS
+
+  // 优先用 /account/login 响应里的 kbitAppKey / kbitAppSecret(等同 Flutter DataSp.kbAppKey/Secret),
+  // 缺失时再退回 config 里手工填的 wsApiKey 和 auth.secretKey(老逻辑)。
+  const apiKey = auth.kbitAppKey || cfg.wsApiKey
+  const hmacSecret = auth.kbitAppSecret || auth.secretKey
 
   debugLog('[WS-Private] connectPrivateWs 被调用')
   debugLog(`[WS-Private] wsPrivateUrl: ${cfg.wsPrivateUrl}`)
-  debugLog(`[WS-Private] wsApiKey: ${cfg.wsApiKey}`)
+  debugLog(`[WS-Private] apiKey: ${apiKey} (kbitAppKey=${!!auth.kbitAppKey})`)
   debugLog(
     `[WS-Private] kbitToken: ${auth.kbitToken ? auth.kbitToken.slice(0, 20) + '...' : '(空)'}`
   )
   debugLog(
-    `[WS-Private] secretKey: ${auth.secretKey ? auth.secretKey.slice(0, 8) + '...' : '(空)'}`
+    `[WS-Private] hmacSecret(前8): ${hmacSecret ? hmacSecret.slice(0, 8) + '...' : '(空)'} | 来源: ${auth.kbitAppSecret ? 'kbitAppSecret' : 'secretKey(legacy)'}`
   )
   debugLog(`[WS-Private] subscriptions: ${JSON.stringify(subscriptions)}`)
 
@@ -232,8 +247,8 @@ function connectPrivateWs(subscriptions?: PrivateSubItem[]): void {
     return
   }
 
-  if (!auth.secretKey) {
-    console.error('[WS-Private] 无法连接：缺少签名密钥 secretKey，请先登录')
+  if (!hmacSecret) {
+    console.error('[WS-Private] 无法连接：缺少 kbitAppSecret/secretKey，请先登录')
     return
   }
 
@@ -242,10 +257,12 @@ function connectPrivateWs(subscriptions?: PrivateSubItem[]): void {
   }
 
   privateWsClient = new PrivateWsClient({
-    apiKey: cfg.wsApiKey,
-    secretKey: auth.secretKey,
+    apiKey,
+    secretKey: hmacSecret,
     passphrase: auth.kbitToken,
-    clientType: 'ios'
+    // KeepBit 私有 WS 登录的 clientType 必须 == passphrase(JWT) 里的 ClientType claim。
+    // 手机端 Flutter 也是写死 'web' (platform=2 服务端会发 ClientType=web 的 JWT)。
+    clientType: 'web'
   })
 
   privateWsClient.setOnData((data) => {
@@ -259,7 +276,8 @@ function connectPrivateWs(subscriptions?: PrivateSubItem[]): void {
     sendToRenderer('ws-private:status', status)
   })
 
-  privateWsClient.connect(cfg.wsPrivateUrl, subscriptions)
+  debugLog(`[WS-Private] 启动订阅: ${JSON.stringify(subs)}`)
+  privateWsClient.connect(cfg.wsPrivateUrl, subs)
 }
 
 function forwardPrivateToWebView(data: unknown): void {
@@ -278,7 +296,7 @@ function createWindow(): void {
     height: 800,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -326,7 +344,9 @@ ipcMain.handle(
           walletToken: result.data.walletToken,
           secretKey: result.data.secretKey,
           kbitToken: result.data.kbitToken,
-          chatToken: result.data.chatToken
+          chatToken: result.data.chatToken,
+          kbitAppKey: result.data.kbitAppKey as string | undefined,
+          kbitAppSecret: result.data.kbitAppSecret as string | undefined
         })
         console.log(
           `[Auth] 登录成功, userID: ${result.data.userID} 登录参数 ${JSON.stringify(result.data)}`
