@@ -7,8 +7,22 @@ import { app } from 'electron'
 import { loadConfig } from './config'
 
 // ==================== 代理配置 ====================
-const PROXY_URL = 'http://127.0.0.1:7890'
-const proxyAgent = new HttpsProxyAgent(PROXY_URL)
+// 按当前 config 动态获取 agent；改了设置无需重启。
+let cachedAgentKey = ''
+let cachedAgent: HttpsProxyAgent<string> | undefined
+function getProxyAgent(): HttpsProxyAgent<string> | undefined {
+  const { proxy } = loadConfig()
+  if (!proxy?.enabled || !proxy.url) {
+    cachedAgentKey = ''
+    cachedAgent = undefined
+    return undefined
+  }
+  if (cachedAgentKey !== proxy.url) {
+    cachedAgentKey = proxy.url
+    cachedAgent = new HttpsProxyAgent(proxy.url)
+  }
+  return cachedAgent
+}
 
 // ==================== 设备信息 ====================
 let cachedMachineId = ''
@@ -36,8 +50,6 @@ function getDeviceInfo() {
 const requestSkipToken: AxiosInstance = axios.create({
   // baseURL 在请求拦截器里按配置动态注入（支持运行时改服务器地址）
   timeout: 15000,
-  httpsAgent: proxyAgent,
-  httpAgent: proxyAgent,
   proxy: false // 禁用 axios 内置 proxy，使用自定义 agent
 })
 
@@ -53,8 +65,9 @@ requestSkipToken.interceptors.request.use((config: InternalAxiosRequestConfig) =
   config.headers['AppType'] = 'QQLink'
   config.headers['DeviceId'] = getMachineId()
   config.headers['Accept-Language'] = 'zh-CN'
-  config.httpsAgent = proxyAgent
-  config.httpAgent = proxyAgent
+  const agent = getProxyAgent()
+  config.httpsAgent = agent
+  config.httpAgent = agent
   return config
 })
 

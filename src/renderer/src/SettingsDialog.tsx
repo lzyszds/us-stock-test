@@ -107,6 +107,40 @@ function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Element | 
             </div>
           </section>
 
+          {/* 代理配置 */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
+                HTTP 代理
+              </h3>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={cfg.proxy.enabled}
+                  onChange={(e) =>
+                    setCfg({ ...cfg, proxy: { ...cfg.proxy, enabled: e.target.checked } })
+                  }
+                />
+                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-emerald-600"></div>
+              </label>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                代理地址
+              </label>
+              <input
+                className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-sm font-mono"
+                placeholder="http://127.0.0.1:7890"
+                value={cfg.proxy.url}
+                onChange={(e) => setCfg({ ...cfg, proxy: { ...cfg.proxy, url: e.target.value } })}
+              />
+              <p className="text-[10px] text-slate-400 italic">
+                影响登录/接口请求(axios)。修改后立即生效,无需重启。
+              </p>
+            </div>
+          </section>
+
           {/* 节流配置 */}
           <section className="space-y-4">
             <div className="flex items-center justify-between">
@@ -122,7 +156,7 @@ function SettingsDialog({ open, onClose, onSaved }: Props): React.JSX.Element | 
                     setCfg({ ...cfg, throttle: { ...cfg.throttle, enabled: e.target.checked } })
                   }
                 />
-                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
               </label>
             </div>
             <div className="space-y-1.5">

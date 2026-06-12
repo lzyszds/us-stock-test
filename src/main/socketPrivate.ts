@@ -8,7 +8,11 @@ import { appendFileSync } from 'fs'
 
 function debugLog(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
-  try { appendFileSync('/tmp/ws-private-debug.log', line) } catch { /* ignore */ }
+  try {
+    appendFileSync('/tmp/ws-private-debug.log', line)
+  } catch {
+    /* ignore */
+  }
   console.log(msg)
 }
 
@@ -50,10 +54,17 @@ function buildLoginCmd(args: PrivateWsLoginArgs): string {
       }
     ]
   }
-  debugLog('[WS-Private] login 命令: ' + JSON.stringify({
-    ...cmd,
-    args: cmd.args.map(a => ({ ...a, passphrase: a.passphrase.slice(0, 20) + '...', sign: a.sign.slice(0, 10) + '...' }))
-  }))
+  debugLog(
+    '[WS-Private] login 命令: ' +
+      JSON.stringify({
+        ...cmd,
+        args: cmd.args.map((a) => ({
+          ...a,
+          passphrase: a.passphrase,
+          sign: a.sign
+        }))
+      })
+  )
 
   return JSON.stringify(cmd)
 }
@@ -79,11 +90,14 @@ export class PrivateWsClient {
 
   // 外部回调
   private onData: PrivateWsCallback = () => {}
-  private onStatus: (status: { connected: boolean; loggedIn: boolean; url: string; error?: string }) => void = () => {}
+  private onStatus: (status: {
+    connected: boolean
+    loggedIn: boolean
+    url: string
+    error?: string
+  }) => void = () => {}
 
-  constructor(
-    private loginArgs: PrivateWsLoginArgs
-  ) {}
+  constructor(private loginArgs: PrivateWsLoginArgs) {}
 
   setOnData(cb: PrivateWsCallback): void {
     this.onData = cb
@@ -116,6 +130,13 @@ export class PrivateWsClient {
 
     this.ws.on('open', () => {
       debugLog(`[WS-Private] 已连接到 ${url}，发送 login`)
+      debugLog(
+        `[WS-Private] 登录参数: ${JSON.stringify({
+          apiKey: this.loginArgs.apiKey,
+          passphrase: this.loginArgs.passphrase,
+          clientType: this.loginArgs.clientType
+        })}`
+      )
       this.emitStatus()
       this.ws!.send(buildLoginCmd(this.loginArgs))
     })
@@ -189,6 +210,14 @@ export class PrivateWsClient {
           this.flushPendingSubs()
         } else {
           debugLog(`[WS-Private] 登录失败: code=${code} msg=${parsed.msg}`)
+          debugLog(`[WS-Private] loginArgs: ${JSON.stringify(this.loginArgs)}`)
+          // 把失败信息(含 loginArgs)推到渲染进程日志面板,方便排查
+          this.onData({
+            event: 'login-fail',
+            code,
+            msg: parsed.msg,
+            loginArgs: this.loginArgs
+          })
           this.emitStatus()
         }
         return
@@ -202,6 +231,7 @@ export class PrivateWsClient {
 
       if (event === 'error') {
         debugLog(`[WS-Private] 错误: code=${code} msg=${parsed.msg}`)
+        debugLog(`[WS-Private] 错误: ${JSON.stringify(this.loginArgs)}`)
         this.onData(parsed)
         return
       }

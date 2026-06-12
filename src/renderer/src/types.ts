@@ -14,4 +14,8 @@ export interface AppConfig {
     intervalMs: number
     batchSize: number
   }
+  proxy: {
+    enabled: boolean
+    url: string
+  }
 }

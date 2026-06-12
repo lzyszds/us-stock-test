@@ -7,8 +7,6 @@ interface LoginPageProps {
 }
 
 function LoginPage({ onLoginSuccess }: LoginPageProps): React.JSX.Element {
-  const [loginType, setLoginType] = useState<'email'>('email')
-  const [areaCode, setAreaCode] = useState('+86')
   const [account, setAccount] = useState('lzyszds@qq.com')
   const [password, setPassword] = useState('Aa395878870')
   const [loading, setLoading] = useState(false)

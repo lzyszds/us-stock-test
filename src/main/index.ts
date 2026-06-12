@@ -9,14 +9,15 @@ import { isHeartbeatMessage, PING_CMD, HEARTBEAT_INTERVAL } from './socket'
 import { PrivateWsClient, type PrivateSubItem } from './socketPrivate'
 import { startMockWs } from './mockWs'
 import { loadConfig, saveConfig, type AppConfig } from './config'
-import { writeFileSync, appendFileSync } from 'fs'
-import { join as pathJoin } from 'path'
+import { appendFileSync } from 'fs'
 
 function debugLog(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
   try {
     appendFileSync('/tmp/ws-private-debug.log', line)
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   console.log(msg)
 }
 
@@ -218,8 +219,12 @@ function connectPrivateWs(subscriptions?: PrivateSubItem[]): void {
   debugLog('[WS-Private] connectPrivateWs 被调用')
   debugLog(`[WS-Private] wsPrivateUrl: ${cfg.wsPrivateUrl}`)
   debugLog(`[WS-Private] wsApiKey: ${cfg.wsApiKey}`)
-  debugLog(`[WS-Private] kbitToken: ${auth.kbitToken ? auth.kbitToken.slice(0, 20) + '...' : '(空)'}`)
-  debugLog(`[WS-Private] secretKey: ${auth.secretKey ? auth.secretKey.slice(0, 8) + '...' : '(空)'}`)
+  debugLog(
+    `[WS-Private] kbitToken: ${auth.kbitToken ? auth.kbitToken.slice(0, 20) + '...' : '(空)'}`
+  )
+  debugLog(
+    `[WS-Private] secretKey: ${auth.secretKey ? auth.secretKey.slice(0, 8) + '...' : '(空)'}`
+  )
   debugLog(`[WS-Private] subscriptions: ${JSON.stringify(subscriptions)}`)
 
   if (!auth.kbitToken) {
@@ -323,7 +328,9 @@ ipcMain.handle(
           kbitToken: result.data.kbitToken,
           chatToken: result.data.chatToken
         })
-        console.log(`[Auth] 登录成功, userID: ${result.data.userID}`)
+        console.log(
+          `[Auth] 登录成功, userID: ${result.data.userID} 登录参数 ${JSON.stringify(result.data)}`
+        )
         return { success: true, data: result.data }
       } else {
         console.error(`[Auth] 登录失败: ${result.errMsg}`)

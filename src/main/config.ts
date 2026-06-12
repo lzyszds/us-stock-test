@@ -27,6 +27,11 @@ export interface AppConfig {
     intervalMs: number // 每个 tick 间隔
     batchSize: number // 每个 tick 推多少条
   }
+  // HTTP/HTTPS 代理
+  proxy: {
+    enabled: boolean
+    url: string // 如 http://127.0.0.1:7890
+  }
 }
 
 // 默认配置
@@ -43,6 +48,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   mock: {
     intervalMs: 500,
     batchSize: 120
+  },
+  proxy: {
+    enabled: true,
+    url: 'http://127.0.0.1:7890'
   }
 }
 
@@ -65,7 +74,8 @@ function merge(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
     wsApiKey: patch.wsApiKey ?? base.wsApiKey,
     apiBaseUrl: patch.apiBaseUrl ?? base.apiBaseUrl,
     throttle: { ...base.throttle, ...patch.throttle },
-    mock: { ...base.mock, ...patch.mock }
+    mock: { ...base.mock, ...patch.mock },
+    proxy: { ...base.proxy, ...patch.proxy }
   }
 }
 

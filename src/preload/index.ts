@@ -115,8 +115,13 @@ contextBridge.exposeInMainWorld('electronBridge', {
     ipcRenderer.on('ws-private:message', handler)
     return () => ipcRenderer.removeListener('ws-private:message', handler)
   },
-  onWsPrivateStatus: (callback: (data: { connected: boolean; loggedIn: boolean; url: string; error?: string }) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { connected: boolean; loggedIn: boolean; url: string; error?: string }): void => callback(data)
+  onWsPrivateStatus: (
+    callback: (data: { connected: boolean; loggedIn: boolean; url: string; error?: string }) => void
+  ): (() => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      data: { connected: boolean; loggedIn: boolean; url: string; error?: string }
+    ): void => callback(data)
     ipcRenderer.on('ws-private:status', handler)
     return () => ipcRenderer.removeListener('ws-private:status', handler)
   },

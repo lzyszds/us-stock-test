@@ -15,10 +15,14 @@ import {
   Database,
   Link,
   ArrowDownToLine,
-  Bug
+  Bug,
+  Pause,
+  ChevronDown,
+  ChevronsDown
 } from 'lucide-react'
 import LoginPage from './LoginPage'
 import SettingsDialog from './SettingsDialog'
+import JsonTree from './JsonTree'
 import type { AppConfig } from './types'
 
 // 扩展 window 类型
@@ -52,6 +56,7 @@ declare global {
       wsGetStatus: () => Promise<{ connected: boolean; url: string }>
       onWsMessage: (callback: (data: unknown) => void) => () => void
       onWsBatch: (callback: (data: unknown[]) => void) => () => void
+      onWsPrivateMessage: (callback: (data: unknown) => void) => () => void
       onWsStatus: (
         callback: (data: { connected: boolean; url: string; error?: string }) => void
       ) => () => void
@@ -80,21 +85,34 @@ function App(): React.JSX.Element {
   const [mockRunning, setMockRunning] = useState(false)
   const [devToolsOpened, setDevToolsOpened] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [wsMessages, setWsMessages] = useState<unknown[]>([])
+  const [wsMessages, setWsMessages] = useState<
+    { source: 'kbPublicMessage' | 'kbPrivateMessage'; data: unknown }[]
+  >([])
   const [msgCount, setMsgCount] = useState(0)
   const [webviewPreload, setWebviewPreload] = useState<string>('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark'
   })
-  const [autoScroll, setAutoScroll] = useState(true)
+  const [autoScroll, setAutoScroll] = useState(false)
+  const [logEnabled, setLogEnabled] = useState(true)
+  const [expandDepth, setExpandDepth] = useState(0)
+  const logEnabledRef = useRef(true)
+  useEffect(() => {
+    logEnabledRef.current = logEnabled
+  }, [logEnabled])
+
+  const LOG_LIMIT = 300
 
   const webviewRef = useRef<HTMLWebViewElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (autoScroll && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
-    }
+    if (!autoScroll) return
+    const el = scrollContainerRef.current
+    if (!el) return
+    // 仅当用户已经在底部(<=40px 容差)时才跟随,否则不动,避免把正在看的位置顶走
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    if (atBottom) el.scrollTop = el.scrollHeight
   }, [wsMessages, autoScroll])
 
   useEffect(() => {
@@ -176,12 +194,28 @@ function App(): React.JSX.Element {
       setWsUrl(status.url)
     })
     const unsubMessage = bridge.onWsMessage((data) => {
-      setWsMessages((prev) => [...prev.slice(-49), data])
+      if (!logEnabledRef.current) return
+      setWsMessages((prev) =>
+        [...prev, { source: 'kbPublicMessage' as const, data }].slice(-LOG_LIMIT)
+      )
       setMsgCount((c) => c + 1)
     })
     const unsubBatch = bridge.onWsBatch((batch) => {
-      setWsMessages((prev) => [...prev, ...batch].slice(-50))
+      if (!logEnabledRef.current) return
+      setWsMessages((prev) =>
+        [
+          ...prev,
+          ...batch.map((d) => ({ source: 'kbPublicMessage' as const, data: d }))
+        ].slice(-LOG_LIMIT)
+      )
       setMsgCount((c) => c + batch.length)
+    })
+    const unsubPrivate = bridge.onWsPrivateMessage?.((data) => {
+      if (!logEnabledRef.current) return
+      setWsMessages((prev) =>
+        [...prev, { source: 'kbPrivateMessage' as const, data }].slice(-LOG_LIMIT)
+      )
+      setMsgCount((c) => c + 1)
     })
     const unsubMock = bridge.onMockStatus((status) => setMockRunning(status.running))
     const unsubCfg = bridge.onConfigChanged((cfg) => setConfig(cfg))
@@ -190,6 +224,7 @@ function App(): React.JSX.Element {
       unsubStatus()
       unsubMessage()
       unsubBatch()
+      unsubPrivate?.()
       unsubMock()
       unsubCfg()
     }
@@ -400,10 +435,47 @@ function App(): React.JSX.Element {
                 Stream_Log
               </span>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 px-2 py-0.5 rounded-full font-bold tabular-nums">
-                {msgCount}
+                {wsMessages.length}/{LOG_LIMIT}
               </span>
+              {[0, 1, 2].map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setExpandDepth(d)}
+                  title={d === 0 ? '折叠' : `展开 ${d} 层`}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md transition-colors ${
+                    expandDepth === d
+                      ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                      : 'text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {d === 0 ? (
+                    <ChevronDown className="w-3.5 h-3.5 -rotate-90" />
+                  ) : d === 1 ? (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronsDown className="w-3.5 h-3.5" />
+                  )}
+                  <span className="text-[9px] font-bold">{d}</span>
+                </button>
+              ))}
+              <button
+                onClick={() => setLogEnabled((v) => !v)}
+                title={logEnabled ? '暂停监听日志' : '恢复监听日志'}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors ${
+                  logEnabled
+                    ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
+                    : 'text-amber-500 bg-amber-50 dark:bg-amber-900/20'
+                }`}
+              >
+                {logEnabled ? (
+                  <Pause className="w-3.5 h-3.5" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+                <span className="text-[9px] font-bold">{logEnabled ? '监听中' : '已暂停'}</span>
+              </button>
               <button
                 onClick={() => setAutoScroll(!autoScroll)}
                 className={`flex items-center gap-1.5 px-2 py-1 transition-colors rounded-md ${
@@ -438,11 +510,24 @@ function App(): React.JSX.Element {
               wsMessages.map((msg, i) => (
                 <div
                   key={i}
-                  className="p-3 bg-slate-50 dark:bg-slate-800/30 rounded-lg border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-1 duration-200"
+                  className="px-2 py-1 bg-slate-50 dark:bg-slate-800/30 rounded border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-1 duration-200"
                 >
-                  <pre className="text-[10px] font-mono whitespace-pre-wrap break-all leading-relaxed text-slate-500 dark:text-slate-400">
-                    {JSON.stringify(msg, null, 2)}
-                  </pre>
+                  <JsonTree
+                    key={expandDepth}
+                    data={msg.data}
+                    defaultExpandDepth={expandDepth}
+                    prefix={
+                      <span
+                        className={`mr-1.5 px-1 rounded text-[10px] font-bold ${
+                          msg.source === 'kbPrivateMessage'
+                            ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+                            : 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300'
+                        }`}
+                      >
+                        [{msg.source}]
+                      </span>
+                    }
+                  />
                 </div>
               ))
             )}
