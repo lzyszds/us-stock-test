@@ -88,7 +88,6 @@ function App(): React.JSX.Element {
   const [wsMessages, setWsMessages] = useState<
     { source: 'kbPublicMessage' | 'kbPrivateMessage'; data: unknown }[]
   >([])
-  const [msgCount, setMsgCount] = useState(0)
   const [webviewPreload, setWebviewPreload] = useState<string>('')
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark'
@@ -198,24 +197,20 @@ function App(): React.JSX.Element {
       setWsMessages((prev) =>
         [...prev, { source: 'kbPublicMessage' as const, data }].slice(-LOG_LIMIT)
       )
-      setMsgCount((c) => c + 1)
     })
     const unsubBatch = bridge.onWsBatch((batch) => {
       if (!logEnabledRef.current) return
       setWsMessages((prev) =>
-        [
-          ...prev,
-          ...batch.map((d) => ({ source: 'kbPublicMessage' as const, data: d }))
-        ].slice(-LOG_LIMIT)
+        [...prev, ...batch.map((d) => ({ source: 'kbPublicMessage' as const, data: d }))].slice(
+          -LOG_LIMIT
+        )
       )
-      setMsgCount((c) => c + batch.length)
     })
     const unsubPrivate = bridge.onWsPrivateMessage?.((data) => {
       if (!logEnabledRef.current) return
       setWsMessages((prev) =>
         [...prev, { source: 'kbPrivateMessage' as const, data }].slice(-LOG_LIMIT)
       )
-      setMsgCount((c) => c + 1)
     })
     const unsubMock = bridge.onMockStatus((status) => setMockRunning(status.running))
     const unsubCfg = bridge.onConfigChanged((cfg) => setConfig(cfg))
@@ -253,7 +248,6 @@ function App(): React.JSX.Element {
   const handleReconnect = (): void => {
     if (!config) return
     setWsMessages([])
-    setMsgCount(0)
     window.electronBridge?.wsConnect(config.wsUrl)
   }
 
@@ -469,11 +463,7 @@ function App(): React.JSX.Element {
                     : 'text-amber-500 bg-amber-50 dark:bg-amber-900/20'
                 }`}
               >
-                {logEnabled ? (
-                  <Pause className="w-3.5 h-3.5" />
-                ) : (
-                  <Play className="w-3.5 h-3.5" />
-                )}
+                {logEnabled ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
                 <span className="text-[9px] font-bold">{logEnabled ? '监听中' : '已暂停'}</span>
               </button>
               <button
